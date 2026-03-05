@@ -7,7 +7,7 @@ import cv2
 
 
 class CIFARColorization(Dataset):
-    def __init__(self, root="./dataset", train=True):
+    def __init__(self, root, train=True):
         self.dataset = CIFAR10(
             root=root,
             train=train,
