@@ -3,6 +3,7 @@ import argparse
 import random
 from pathlib import Path
 
+import torch.nn.functional as F
 import numpy as np
 import torch
 import torch.nn as nn
@@ -132,45 +133,50 @@ class ColorizationDataset(Dataset):
 # 5. Архитектура GAN (упрощенный Pix2Pix)
 # ============================================
 class UNetGenerator(nn.Module):
-    """Упрощенный U-Net для колоризации"""
+    """U-Net для колоризации с правильным согласованием размеров"""
     def __init__(self, in_channels=1, out_channels=3):
         super().__init__()
         
-        # Encoder
+        # Encoder (без пулинга внутри блоков — используем отдельные слои)
         self.enc1 = self._conv_block(in_channels, 64)
+        self.pool1 = nn.MaxPool2d(2, 2)
+        
         self.enc2 = self._conv_block(64, 128)
+        self.pool2 = nn.MaxPool2d(2, 2)
+        
         self.enc3 = self._conv_block(128, 256)
+        self.pool3 = nn.MaxPool2d(2, 2)
+        
         self.enc4 = self._conv_block(256, 512)
+        self.pool4 = nn.MaxPool2d(2, 2)
         
         # Bottleneck
         self.bottleneck = self._conv_block(512, 512)
         
-        # Decoder
-        self.dec4 = self._upconv_block(512 + 512, 256)
-        self.dec3 = self._upconv_block(256 + 256, 128)
-        self.dec2 = self._upconv_block(128 + 128, 64)
+        # Decoder с правильными skip-connections
+        self.up4 = nn.ConvTranspose2d(512, 512, kernel_size=2, stride=2)
+        self.dec4 = self._conv_block(1024, 256)  # 512 (up4) + 512 (skip enc4)
+        
+        self.up3 = nn.ConvTranspose2d(256, 256, kernel_size=2, stride=2)
+        self.dec3 = self._conv_block(512, 128)   # 256 (up3) + 256 (skip enc3)
+        
+        self.up2 = nn.ConvTranspose2d(128, 128, kernel_size=2, stride=2)
+        self.dec2 = self._conv_block(256, 64)    # 128 (up2) + 128 (skip enc2)
+        
+        self.up1 = nn.ConvTranspose2d(64, 64, kernel_size=2, stride=2)
         self.dec1 = nn.Sequential(
-            nn.ConvTranspose2d(64 + 64, 32, 4, 2, 1),
-            nn.ReLU(),
-            nn.Conv2d(32, out_channels, 3, 1, 1),
+            nn.Conv2d(128, 32, kernel_size=3, padding=1),  # 64 (up1) + 64 (skip enc1) = 128
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, out_channels, kernel_size=3, padding=1),
             nn.Tanh()
         )
         
-        self.pool = nn.MaxPool2d(2, 2)
-        
     def _conv_block(self, in_ch, out_ch):
         return nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, 1, 1),
+            nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1),
             nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True),
-            nn.Conv2d(out_ch, out_ch, 3, 1, 1),
-            nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True)
-        )
-    
-    def _upconv_block(self, in_ch, out_ch):
-        return nn.Sequential(
-            nn.ConvTranspose2d(in_ch, out_ch, 4, 2, 1),
+            nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1),
             nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True)
         )
@@ -178,18 +184,34 @@ class UNetGenerator(nn.Module):
     def forward(self, x):
         # Encoder
         e1 = self.enc1(x)
-        e2 = self.enc2(self.pool(e1))
-        e3 = self.enc3(self.pool(e2))
-        e4 = self.enc4(self.pool(e3))
+        e2 = self.enc2(self.pool1(e1))
+        e3 = self.enc3(self.pool2(e2))
+        e4 = self.enc4(self.pool3(e3))
         
         # Bottleneck
-        b = self.bottleneck(self.pool(e4))
+        b = self.bottleneck(self.pool4(e4))
         
         # Decoder with skip connections
-        d4 = self.dec4(torch.cat([b, e4], dim=1))
-        d3 = self.dec3(torch.cat([d4, e3], dim=1))
-        d2 = self.dec2(torch.cat([d3, e2], dim=1))
-        d1 = self.dec1(torch.cat([d2, e1], dim=1))
+        d4 = self.up4(b)
+        # Обрезаем e4 если размеры не совпадают
+        if d4.shape != e4.shape:
+            d4 = F.interpolate(d4, size=e4.shape[2:], mode='bilinear', align_corners=True)
+        d4 = self.dec4(torch.cat([d4, e4], dim=1))
+        
+        d3 = self.up3(d4)
+        if d3.shape != e3.shape:
+            d3 = F.interpolate(d3, size=e3.shape[2:], mode='bilinear', align_corners=True)
+        d3 = self.dec3(torch.cat([d3, e3], dim=1))
+        
+        d2 = self.up2(d3)
+        if d2.shape != e2.shape:
+            d2 = F.interpolate(d2, size=e2.shape[2:], mode='bilinear', align_corners=True)
+        d2 = self.dec2(torch.cat([d2, e2], dim=1))
+        
+        d1 = self.up1(d2)
+        if d1.shape != e1.shape:
+            d1 = F.interpolate(d1, size=e1.shape[2:], mode='bilinear', align_corners=True)
+        d1 = self.dec1(torch.cat([d1, e1], dim=1))
         
         return d1
 
