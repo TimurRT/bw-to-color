@@ -78,8 +78,8 @@ class PairedAugmentation:
 
         # Random Rotation (-15 to 15 degrees)
         angle = random.uniform(-15, 15)
-        input_img = TF.rotate(input_img, angle)
-        target_img = TF.rotate(target_img)
+        input_img = TF.rotate(input_img, angle)      # ← angle добавлен
+        target_img = TF.rotate(target_img, angle)    # ← angle добавлен
 
         # Color Jitter ONLY on target (color image)
         color_jitter = transforms.ColorJitter(
@@ -88,7 +88,7 @@ class PairedAugmentation:
         target_img = color_jitter(target_img)
 
         return input_img, target_img
-
+    
 class ColorizationDataset(Dataset):
     def __init__(self, root_dir, image_size=256, is_train=True):
         self.image_paths = list(Path(root_dir).rglob("*.jpg"))  # COCO
