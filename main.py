@@ -90,42 +90,57 @@ class PairedAugmentation:
         target_img = color_jitter(target_img)
 
         return input_img, target_img
-    
+
 class ResNetUNetGenerator(nn.Module):
     def __init__(self, in_channels=1, out_channels=3):
         super().__init__()
-        # 1. Загружаем предобученный ResNet18
-        resnet = models.resnet18(pretrained=True)
         
-        # 2. Забираем из него "энкодер" (все слои, кроме последних)
-        # Первый слой ResNet ожидает 3 канала (RGB), а у нас 1 (Grayscale).
-        # Мы аккуратно усредним веса, чтобы адаптировать его.
+        # 1. Загружаем предобученный ResNet18
+        resnet = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+        
+        # 2. Адаптируем первый слой под 1 канал (grayscale)
         old_conv1 = resnet.conv1
         resnet.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
         with torch.no_grad():
             resnet.conv1.weight[:, :1] = old_conv1.weight.mean(dim=1, keepdim=True)
         
-        # Отрежем всё после предпоследнего слоя
-        self.encoder = nn.Sequential(*list(resnet.children())[:-2])
+        # 3. Разделяем ResNet на блоки для skip-connections
+        self.initial = nn.Sequential(
+            resnet.conv1,
+            resnet.bn1,
+            resnet.relu,
+            resnet.maxpool
+        )  # Выход: 64 канала, размер H/4, W/4
         
-        # 3. "Заморозим" энкодер, чтобы его веса не обновлялись в начале
-        for param in self.encoder.parameters():
+        self.layer1 = resnet.layer1  # Выход: 64 канала
+        self.layer2 = resnet.layer2  # Выход: 128 каналов
+        self.layer3 = resnet.layer3  # Выход: 256 каналов
+        self.layer4 = resnet.layer4  # Выход: 512 каналов
+        
+        # 4. Замораживаем энкодер (опционально)
+        for param in self.initial.parameters():
+            param.requires_grad = False
+        for param in self.layer1.parameters():
+            param.requires_grad = False
+        for param in self.layer2.parameters():
             param.requires_grad = False
             
-        # 4. Декодер (аналогично вашему, но с учетом размеров ResNet)
+        # 5. Декодер с правильными размерами каналов
+        # После layer4: 512 каналов, размер H/32, W/32
         self.up1 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
-        self.dec1 = self._conv_block(512, 256) # 256(up1) + 256(skip)
+        self.dec1 = self._conv_block(256 + 256, 256)  # up1(256) + layer3(256)
         
         self.up2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
-        self.dec2 = self._conv_block(256, 128) # 128(up2) + 128(skip)
+        self.dec2 = self._conv_block(128 + 128, 128)  # up2(128) + layer2(128)
         
         self.up3 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-        self.dec3 = self._conv_block(128, 64)  # 64(up3) + 64(skip)
+        self.dec3 = self._conv_block(64 + 64, 64)     # up3(64) + layer1(64)
         
         self.up4 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)
+        # Для финального слоя нужен skip от initial блока (64 канала)
         self.final = nn.Sequential(
-            nn.Conv2d(32 + 64, 32, kernel_size=3, padding=1), # 32(up4) + 64(initial)
-            nn.ReLU(),
+            nn.Conv2d(32 + 64, 32, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
             nn.Conv2d(32, out_channels, kernel_size=3, padding=1),
             nn.Tanh()
         )
@@ -141,35 +156,35 @@ class ResNetUNetGenerator(nn.Module):
         )
     
     def forward(self, x):
-        # Сохраняем начальный тензор для skip-connection
-        x_initial = x
+        # Сохраняем оригинальный размер для финального выравнивания
+        input_size = x.shape[2:]
         
-        # Прогоняем через энкодер
-        x = self.encoder[0](x) # Первый сверточный блок
-        e1 = x
-        x = self.encoder[1](x) # MaxPool
-        x = self.encoder[2](x) # layer1
-        e2 = x
-        x = self.encoder[3](x) # layer2
-        e3 = x
-        x = self.encoder[4](x) # layer3
-        e4 = x
-        x = self.encoder[5](x) # layer4
+        # Энкодер
+        x0 = self.initial(x)      # 64 канала,  H/4
+        x1 = self.layer1(x0)      # 64 канала,  H/4
+        x2 = self.layer2(x1)      # 128 каналов, H/8
+        x3 = self.layer3(x2)      # 256 каналов, H/16
+        x4 = self.layer4(x3)      # 512 каналов, H/32
         
-        # Декодер
-        d1 = self.up1(x)
-        d1 = self.dec1(torch.cat([d1, e4], dim=1))
+        # Декодер с skip-connections
+        d1 = self.up1(x4)                            # 256 каналов, H/16
+        d1 = F.interpolate(d1, size=x3.shape[2:], mode='bilinear', align_corners=True)
+        d1 = self.dec1(torch.cat([d1, x3], dim=1))   # 256 каналов
         
-        d2 = self.up2(d1)
-        d2 = self.dec2(torch.cat([d2, e3], dim=1))
+        d2 = self.up2(d1)                            # 128 каналов, H/8
+        d2 = F.interpolate(d2, size=x2.shape[2:], mode='bilinear', align_corners=True)
+        d2 = self.dec2(torch.cat([d2, x2], dim=1))   # 128 каналов
         
-        d3 = self.up3(d2)
-        d3 = self.dec3(torch.cat([d3, e2], dim=1))
+        d3 = self.up3(d2)                            # 64 канала, H/4
+        d3 = F.interpolate(d3, size=x1.shape[2:], mode='bilinear', align_corners=True)
+        d3 = self.dec3(torch.cat([d3, x1], dim=1))   # 64 канала
         
-        d4 = self.up4(d3)
-        # Размер x_initial может не совпадать с d4, выравниваем
-        d4 = F.interpolate(d4, size=x_initial.shape[2:], mode='bilinear', align_corners=True)
-        out = self.final(torch.cat([d4, x_initial], dim=1))
+        d4 = self.up4(d3)                            # 32 канала, H/2
+        d4 = F.interpolate(d4, size=x0.shape[2:], mode='bilinear', align_corners=True)
+        out = self.final(torch.cat([d4, x0], dim=1))
+        
+        # Восстанавливаем оригинальный размер
+        out = F.interpolate(out, size=input_size, mode='bilinear', align_corners=True)
         
         return out
     
