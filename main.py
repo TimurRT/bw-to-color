@@ -259,9 +259,12 @@ for epoch in range(args.epochs):
         
         batch_size = gray_imgs.size(0)
         
+        # Динамическое вычисление размера патча
+        patch_size = args.image_size // 16  # 256 -> 16, 128 -> 8
+        
         # Создаем метки для real/fake
-        real_labels = torch.ones(batch_size, 1, 30, 30).to(device) * 0.9  # label smoothing
-        fake_labels = torch.zeros(batch_size, 1, 30, 30).to(device)
+        real_labels = torch.ones(batch_size, 1, patch_size, patch_size).to(device) * 0.9  # label smoothing
+        fake_labels = torch.zeros(batch_size, 1, patch_size, patch_size).to(device)
         
         # ---------------------
         #  Train Discriminator
@@ -290,7 +293,7 @@ for epoch in range(args.epochs):
         fake_pred = discriminator(gray_imgs, fake_color)
         loss_G_GAN = criterion_GAN(fake_pred, real_labels)
         
-        # L1 loss (реконструкция цвета)
+        # L1 loss
         loss_G_L1 = criterion_L1(fake_color, color_imgs) * args.lambda_l1
         
         loss_G = loss_G_GAN + loss_G_L1
