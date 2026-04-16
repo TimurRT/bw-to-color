@@ -1,12 +1,10 @@
 [project]
-name = "bw-to-color"
+name = "colorization-gan"
 version = "0.1.0"
 dependencies = [
-    "clearml",
-    "torch",
-    "torchvision",
-    "opencv-python",
-    "matplotlib",
-    "numpy",
-    "pillow",
+    "numpy>=1.21.0,<2.0.0",     # NumPy 1.x для Python 3.9
+    "pillow>=9.0.0,<11.0.0",    # Актуальный Pillow
+    "torch>=1.13.0,<2.6.0",     # PyTorch для Python 3.9
+    "torchvision>=0.14.0,<0.21.0", # Совместимый TorchVision
+    "clearml>=1.10.0,<2.3.0",   # Актуальный ClearML
 ]
