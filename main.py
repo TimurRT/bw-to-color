@@ -348,14 +348,26 @@ class PatchGAN(nn.Module):
 generator = ResNetUNetGenerator(in_channels=1, out_channels=3).to(device)
 discriminator = PatchGAN(in_channels=4).to(device)
 
-# Размораживаем энкодер для тонкой настройки (transfer learning)
-for param in generator.encoder.parameters():
+# Размораживаем слои энкодера для тонкой настройки
+# В ResNetUNetGenerator энкодер разделён на отдельные блоки
+for param in generator.initial.parameters():
+    param.requires_grad = True
+for param in generator.layer1.parameters():
+    param.requires_grad = True
+for param in generator.layer2.parameters():
+    param.requires_grad = True
+for param in generator.layer3.parameters():
+    param.requires_grad = True
+for param in generator.layer4.parameters():
     param.requires_grad = True
 
-# Для энкодера устанавливаем скорость обучения в 10 раз меньше,
-# чтобы не испортить предобученные веса
+# Для слоёв энкодера устанавливаем скорость обучения в 10 раз меньше
 opt_G = optim.Adam([
-    {'params': generator.encoder.parameters(), 'lr': args.lr * 0.1},
+    {'params': generator.initial.parameters(), 'lr': args.lr * 0.1},
+    {'params': generator.layer1.parameters(), 'lr': args.lr * 0.1},
+    {'params': generator.layer2.parameters(), 'lr': args.lr * 0.1},
+    {'params': generator.layer3.parameters(), 'lr': args.lr * 0.1},
+    {'params': generator.layer4.parameters(), 'lr': args.lr * 0.1},
     {'params': generator.up1.parameters()},
     {'params': generator.dec1.parameters()},
     {'params': generator.up2.parameters()},
