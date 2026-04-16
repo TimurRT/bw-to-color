@@ -499,15 +499,39 @@ for epoch in range(args.epochs):
         )
 
 # ============================================
-# 9. Сохранение финальной модели
+# 9. Сохранение финальной модели на сервер ClearML
 # ============================================
-print("=== Сохранение финальной модели в ClearML ===")
+print("=== Сохранение финальной модели на сервер ClearML ===")
 
+# Сохраняем модель локально
 final_model_path = "models/generator_final.pth"
+Path("models").mkdir(exist_ok=True)
 torch.save(generator.state_dict(), final_model_path)
+print(f"Model saved locally to: {final_model_path}")
 
-output_model = OutputModel(task=task, framework="PyTorch")
-output_model.update_weights(weights_filename=final_model_path)
+# ЗАГРУЖАЕМ НА СЕРВЕР CLEARML (гарантированное сохранение)
+task.upload_artifact(
+    name="generator_final",
+    artifact_object=final_model_path
+)
+print("Model uploaded to ClearML server successfully!")
+
+# Также сохраняем чекпоинт с полным состоянием обучения
+checkpoint_path = "models/final_checkpoint.pth"
+torch.save({
+    'epoch': args.epochs,
+    'generator_state_dict': generator.state_dict(),
+    'discriminator_state_dict': discriminator.state_dict(),
+    'opt_G_state_dict': opt_G.state_dict(),
+    'opt_D_state_dict': opt_D.state_dict(),
+}, checkpoint_path)
+
+# Загружаем чекпоинт как артефакт
+task.upload_artifact(
+    name="final_checkpoint",
+    artifact_object=checkpoint_path
+)
+print("Checkpoint uploaded to ClearML server!")
 
 task.close()
-print("Обучение завершено! Модель сохранена в ClearML.")
+print("Обучение завершено! Модели сохранены на сервере ClearML.")
