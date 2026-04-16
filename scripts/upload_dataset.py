@@ -1,26 +1,31 @@
-from clearml import Dataset
-from torchvision.datasets import CIFAR10
-import os
+from clearml import Dataset, StorageManager
 
-# скачиваем CIFAR10 локально
-dataset_path = "./cifar_local"
+DATASET_NAME = "coco_2017_train"
+PROJECT_NAME = "Colorization_GAN"
+# Прямая ссылка на официальный архив COCO 2017 Train images
+COCO_URL = "http://images.cocodataset.org/zips/train2017.zip"
 
-CIFAR10(root=dataset_path, train=True, download=True)
-CIFAR10(root=dataset_path, train=False, download=True)
+print(f"=== Скачивание архива {COCO_URL} через StorageManager... ===")
+# StorageManager сам распакует архив во временную папку и вернет путь
+manager = StorageManager()
+local_path = manager.get_local_copy(remote_url=COCO_URL)
 
-# создаём dataset в ClearML
+print(f"=== Архив распакован в: {local_path} ===")
+
+print("=== 1. Создание задачи датасета в ClearML ===")
 dataset = Dataset.create(
-    dataset_name="CIFAR10",
-    dataset_project="VAE_Colorization"
+    dataset_name=DATASET_NAME,
+    dataset_project=PROJECT_NAME,
+    description="COCO 2017 Training set (118k images) for BW-to-Color GAN"
 )
 
-# добавляем файлы
-dataset.add_files(dataset_path)
+print("=== 2. Добавление файлов... ===")
+# Добавляем все файлы из распакованной папки (там будут *.jpg)
+dataset.add_files(path=local_path, wildcard="*.jpg")
 
-# загружаем
-dataset.upload()
+print("=== 3. Загрузка на сервер ClearML ===")
+dataset.upload(verbose=True)
 
-# фиксируем версию
+print("=== 4. Финализация ===")
 dataset.finalize()
-
-print("Dataset uploaded to ClearML")
+print(f"Готово! ID датасета: {dataset.id}")
