@@ -249,6 +249,8 @@ print(f"Найдено {len(train_dataset)} изображений для обу
 # ============================================
 print("=== Начало обучения ===")
 
+patch_size = None  # Будет вычислен на первой итерации
+
 for epoch in range(args.epochs):
     epoch_loss_G = 0.0
     epoch_loss_D = 0.0
@@ -259,11 +261,15 @@ for epoch in range(args.epochs):
         
         batch_size = gray_imgs.size(0)
         
-        # Динамическое вычисление размера патча
-        patch_size = args.image_size // 16  # 256 -> 16, 128 -> 8
+        # Динамическое определение размера патча
+        if patch_size is None:
+            with torch.no_grad():
+                dummy_output = discriminator(gray_imgs[:1], color_imgs[:1])
+                patch_size = dummy_output.shape[-1]
+                print(f"Patch size detected: {patch_size}x{patch_size}")
         
-        # Создаем метки для real/fake
-        real_labels = torch.ones(batch_size, 1, patch_size, patch_size).to(device) * 0.9  # label smoothing
+        # Создаем метки правильного размера
+        real_labels = torch.ones(batch_size, 1, patch_size, patch_size).to(device) * 0.9
         fake_labels = torch.zeros(batch_size, 1, patch_size, patch_size).to(device)
         
         # ---------------------
@@ -283,6 +289,22 @@ for epoch in range(args.epochs):
         loss_D = (loss_D_real + loss_D_fake) * 0.5
         loss_D.backward()
         opt_D.step()
+        
+        # ---------------------
+        #  Train Generator
+        # ---------------------
+        opt_G.zero_grad()
+        
+        # GAN loss
+        fake_pred = discriminator(gray_imgs, fake_color)
+        loss_G_GAN = criterion_GAN(fake_pred, real_labels)
+        
+        # L1 loss
+        loss_G_L1 = criterion_L1(fake_color, color_imgs) * args.lambda_l1
+        
+        loss_G = loss_G_GAN + loss_G_L1
+        loss_G.backward()
+        opt_G.step()
         
         # ---------------------
         #  Train Generator
