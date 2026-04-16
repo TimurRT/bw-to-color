@@ -270,8 +270,7 @@ print(f"Найдено {len(train_dataset)} изображений для обу
 # 8. Цикл обучения
 # ============================================
 print("=== Начало обучения ===")
-
-patch_size = None  # Будет вычислен на первой итерации
+patch_size = None
 
 for epoch in range(args.epochs):
     epoch_loss_G = 0.0
@@ -290,9 +289,23 @@ for epoch in range(args.epochs):
                 patch_size = dummy_output.shape[-1]
                 print(f"Patch size detected: {patch_size}x{patch_size}")
         
-        # Создаем метки правильного размера
         real_labels = torch.ones(batch_size, 1, patch_size, patch_size).to(device) * 0.9
         fake_labels = torch.zeros(batch_size, 1, patch_size, patch_size).to(device)
+        
+        # ---------------------
+        #  Train Generator
+        # ---------------------
+        opt_G.zero_grad()
+        
+        fake_color = generator(gray_imgs)
+        fake_pred = discriminator(gray_imgs, fake_color)
+        
+        loss_G_GAN = criterion_GAN(fake_pred, real_labels)
+        loss_G_L1 = criterion_L1(fake_color, color_imgs) * args.lambda_l1
+        loss_G = loss_G_GAN + loss_G_L1
+        
+        loss_G.backward(retain_graph=True)  # ← retain_graph=True!
+        opt_G.step()
         
         # ---------------------
         #  Train Discriminator
@@ -303,46 +316,13 @@ for epoch in range(args.epochs):
         real_pred = discriminator(gray_imgs, color_imgs)
         loss_D_real = criterion_GAN(real_pred, real_labels)
         
-        # Fake loss
-        fake_color = generator(gray_imgs)
+        # Fake loss (используем detach() чтобы не трогать генератор)
         fake_pred = discriminator(gray_imgs, fake_color.detach())
         loss_D_fake = criterion_GAN(fake_pred, fake_labels)
         
         loss_D = (loss_D_real + loss_D_fake) * 0.5
         loss_D.backward()
         opt_D.step()
-        
-        # ---------------------
-        #  Train Generator
-        # ---------------------
-        opt_G.zero_grad()
-        
-        # GAN loss
-        fake_pred = discriminator(gray_imgs, fake_color)
-        loss_G_GAN = criterion_GAN(fake_pred, real_labels)
-        
-        # L1 loss
-        loss_G_L1 = criterion_L1(fake_color, color_imgs) * args.lambda_l1
-        
-        loss_G = loss_G_GAN + loss_G_L1
-        loss_G.backward()
-        opt_G.step()
-        
-        # ---------------------
-        #  Train Generator
-        # ---------------------
-        opt_G.zero_grad()
-        
-        # GAN loss
-        fake_pred = discriminator(gray_imgs, fake_color)
-        loss_G_GAN = criterion_GAN(fake_pred, real_labels)
-        
-        # L1 loss
-        loss_G_L1 = criterion_L1(fake_color, color_imgs) * args.lambda_l1
-        
-        loss_G = loss_G_GAN + loss_G_L1
-        loss_G.backward()
-        opt_G.step()
         
         epoch_loss_G += loss_G.item()
         epoch_loss_D += loss_D.item()
