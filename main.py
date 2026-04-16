@@ -3,6 +3,7 @@ import argparse
 import random
 from pathlib import Path
 
+import torchvision.models as models
 import torch.nn.functional as F
 import numpy as np
 import torch
@@ -90,13 +91,100 @@ class PairedAugmentation:
 
         return input_img, target_img
     
+class ResNetUNetGenerator(nn.Module):
+    def __init__(self, in_channels=1, out_channels=3):
+        super().__init__()
+        # 1. Загружаем предобученный ResNet18
+        resnet = models.resnet18(pretrained=True)
+        
+        # 2. Забираем из него "энкодер" (все слои, кроме последних)
+        # Первый слой ResNet ожидает 3 канала (RGB), а у нас 1 (Grayscale).
+        # Мы аккуратно усредним веса, чтобы адаптировать его.
+        old_conv1 = resnet.conv1
+        resnet.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        with torch.no_grad():
+            resnet.conv1.weight[:, :1] = old_conv1.weight.mean(dim=1, keepdim=True)
+        
+        # Отрежем всё после предпоследнего слоя
+        self.encoder = nn.Sequential(*list(resnet.children())[:-2])
+        
+        # 3. "Заморозим" энкодер, чтобы его веса не обновлялись в начале
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+            
+        # 4. Декодер (аналогично вашему, но с учетом размеров ResNet)
+        self.up1 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
+        self.dec1 = self._conv_block(512, 256) # 256(up1) + 256(skip)
+        
+        self.up2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
+        self.dec2 = self._conv_block(256, 128) # 128(up2) + 128(skip)
+        
+        self.up3 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
+        self.dec3 = self._conv_block(128, 64)  # 64(up3) + 64(skip)
+        
+        self.up4 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)
+        self.final = nn.Sequential(
+            nn.Conv2d(32 + 64, 32, kernel_size=3, padding=1), # 32(up4) + 64(initial)
+            nn.ReLU(),
+            nn.Conv2d(32, out_channels, kernel_size=3, padding=1),
+            nn.Tanh()
+        )
+        
+    def _conv_block(self, in_ch, out_ch):
+        return nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, 3, padding=1),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True)
+        )
+    
+    def forward(self, x):
+        # Сохраняем начальный тензор для skip-connection
+        x_initial = x
+        
+        # Прогоняем через энкодер
+        x = self.encoder[0](x) # Первый сверточный блок
+        e1 = x
+        x = self.encoder[1](x) # MaxPool
+        x = self.encoder[2](x) # layer1
+        e2 = x
+        x = self.encoder[3](x) # layer2
+        e3 = x
+        x = self.encoder[4](x) # layer3
+        e4 = x
+        x = self.encoder[5](x) # layer4
+        
+        # Декодер
+        d1 = self.up1(x)
+        d1 = self.dec1(torch.cat([d1, e4], dim=1))
+        
+        d2 = self.up2(d1)
+        d2 = self.dec2(torch.cat([d2, e3], dim=1))
+        
+        d3 = self.up3(d2)
+        d3 = self.dec3(torch.cat([d3, e2], dim=1))
+        
+        d4 = self.up4(d3)
+        # Размер x_initial может не совпадать с d4, выравниваем
+        d4 = F.interpolate(d4, size=x_initial.shape[2:], mode='bilinear', align_corners=True)
+        out = self.final(torch.cat([d4, x_initial], dim=1))
+        
+        return out
+    
 class ColorizationDataset(Dataset):
     def __init__(self, root_dir, image_size=256, is_train=True):
-        self.image_paths = list(Path(root_dir).rglob("*.jpg"))  # COCO
-        # Если CIFAR: нужно адаптировать под формат
-        if not self.image_paths:
-            self.image_paths = list(Path(root_dir).rglob("*.png"))
-            
+        self.image_paths = list(Path(root_dir).rglob("*.jpg"))
+        # ... (код для *.png если CIFAR) ...
+        
+        # --- ВОТ ЭТА СТРОКА ОГРАНИЧИВАЕТ ДАТАСЕТ ---
+        # Перемешиваем и берем первые 8000 для обучения
+        if is_train:
+            random.shuffle(self.image_paths)
+            self.image_paths = self.image_paths[:8000] 
+        # -----------------------------------------
+        
         self.image_size = image_size
         self.is_train = is_train
         self.augmentation = PairedAugmentation(image_size) if is_train else None
@@ -242,10 +330,27 @@ class PatchGAN(nn.Module):
 # ============================================
 # 6. Инициализация моделей и оптимизаторов
 # ============================================
-generator = UNetGenerator(in_channels=1, out_channels=3).to(device)
+generator = ResNetUNetGenerator(in_channels=1, out_channels=3).to(device)
 discriminator = PatchGAN(in_channels=4).to(device)
 
-opt_G = optim.Adam(generator.parameters(), lr=args.lr, betas=(0.5, 0.999))
+# Размораживаем энкодер для тонкой настройки (transfer learning)
+for param in generator.encoder.parameters():
+    param.requires_grad = True
+
+# Для энкодера устанавливаем скорость обучения в 10 раз меньше,
+# чтобы не испортить предобученные веса
+opt_G = optim.Adam([
+    {'params': generator.encoder.parameters(), 'lr': args.lr * 0.1},
+    {'params': generator.up1.parameters()},
+    {'params': generator.dec1.parameters()},
+    {'params': generator.up2.parameters()},
+    {'params': generator.dec2.parameters()},
+    {'params': generator.up3.parameters()},
+    {'params': generator.dec3.parameters()},
+    {'params': generator.up4.parameters()},
+    {'params': generator.final.parameters()},
+], lr=args.lr, betas=(0.5, 0.999))
+
 opt_D = optim.Adam(discriminator.parameters(), lr=args.lr, betas=(0.5, 0.999))
 
 # Losses
