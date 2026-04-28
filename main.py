@@ -197,7 +197,7 @@ class ColorizationDataset(Dataset):
         # Перемешиваем и берем первые 8000 для обучения
         if is_train:
             random.shuffle(self.image_paths)
-            self.image_paths = self.image_paths[:8000] 
+            self.image_paths = self.image_paths[:20000] 
         # -----------------------------------------
         
         self.image_size = image_size

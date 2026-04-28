@@ -1,4 +1,4 @@
-# scripts/test_from_clearml.py
+# scripts/test_local.py
 import torch
 import torchvision.transforms as transforms
 from PIL import Image
@@ -13,11 +13,16 @@ import torch.nn as nn
 import torchvision.models as models
 import torch.nn.functional as F
 
-# Импорт ClearML
-from clearml import Model
+# ============================================
+# ПУТЬ К МОДЕЛИ (укажите ваш путь)
+# ============================================
+MODEL_PATH = "models/generator_final.pth"  # ← ваш путь к модели
+
+# Папка с тестовыми изображениями
+TEST_FOLDER = Path("test_images")
 
 # ============================================
-# Архитектура генератора (копия из main.py)
+# Архитектура генератора
 # ============================================
 class ResNetUNetGenerator(nn.Module):
     def __init__(self, in_channels=1, out_channels=3):
@@ -82,60 +87,12 @@ class ResNetUNetGenerator(nn.Module):
         return F.interpolate(out, size=input_size, mode='bilinear', align_corners=True)
 
 # ============================================
-# Настройки
+# Функция раскрашивания
 # ============================================
-PROJECT_NAME = "Colorization_GAN"
-MODEL_NAME = "GAN_training Remote"  # Имя задачи, откуда брать модель
-
-# Папка с тестовыми изображениями
-TEST_FOLDER = Path("test_images")
-
-from clearml import InputModel, Task
-
-def download_model_from_clearml_v2(project_name, task_name):
-    """
-    Скачивает модель через InputModel
-    """
-    print(f"Looking for models in project: '{project_name}'")
-    
-    # Получаем список моделей
-    from clearml import Model
-    models_list = Model.query_models(project_name=project_name)
-    
-    if not models_list:
-        print(f"No models found in project '{project_name}'")
-        return None
-    
-    print(f"Found {len(models_list)} model(s)")
-    
-    # Ищем модель от задачи GAN_training
-    target_model = None
-    for m in models_list:
-        if task_name.lower() in m.name.lower():
-            target_model = m
-            print(f"Found model: {m.name} (ID: {m.id})")
-            break
-    
-    if target_model is None:
-        target_model = models_list[0]
-        print(f"Using latest model: {target_model.name}")
-    
-    # Скачиваем через InputModel
-    print(f"Downloading model...")
-    input_model = InputModel(model_id=target_model.id)
-    model_path = input_model.get_local_copy()
-    
-    if model_path is None:
-        print("Failed to download model")
-        return None
-    
-    print(f"Model downloaded to: {model_path}")
-    return model_path
-
 def colorize_image(model, image_path, device):
     img = Image.open(image_path).convert('RGB')
     
-    # Grayscale
+    # Grayscale вход
     gray = img.convert('L').resize((256, 256))
     transform = transforms.Compose([
         transforms.ToTensor(),
@@ -143,58 +100,41 @@ def colorize_image(model, image_path, device):
     ])
     gray_tensor = transform(gray).unsqueeze(0).to(device)
     
-    # Colorize
+    # Раскрашиваем
     with torch.no_grad():
         colorized = model(gray_tensor)
     
-    # Convert back
+    # Конвертируем обратно в изображение
     colorized = colorized.squeeze(0).cpu()
-    colorized = (colorized + 1) / 2
+    colorized = (colorized + 1) / 2  # [-1, 1] -> [0, 1]
     colorized = colorized.clamp(0, 1)
     colorized = transforms.ToPILImage()(colorized)
     
     return gray, colorized, img.resize((256, 256))
 
+# ============================================
+# Главная функция
+# ============================================
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    # 1. Скачиваем модель
-    print("\n=== Loading model from ClearML ===")
-    model_path = download_model_from_clearml_v2(PROJECT_NAME, MODEL_NAME)
-    
-    if model_path is None:
-        print("Cannot download model from ClearML")
-        print("\nFallback: Download manually from ClearML UI")
-        print("1. Open ClearML UI -> Project 'Colorization_GAN'")
-        print("2. Find task 'GAN_training' -> ARTIFACTS tab")
-        print("3. Download model and place in models/ folder")
+    # Проверяем модель
+    model_file = Path(MODEL_PATH)
+    if not model_file.exists():
+        print(f"ERROR: Model not found at {model_file.absolute()}")
+        print("Please update MODEL_PATH in the script")
         return
     
-    # 2. Загружаем модель
-    print("\n=== Loading model into PyTorch ===")
+    # Загружаем модель
+    print(f"Loading model: {model_file}")
     model = ResNetUNetGenerator(in_channels=1, out_channels=3).to(device)
-    
-    # Если model_path - это папка, ищем .pth файл внутри
-    from pathlib import Path
-    model_path = Path(model_path)
-    if model_path.is_dir():
-        pth_files = list(model_path.glob("*.pth")) + list(model_path.glob("*.pt"))
-        if pth_files:
-            model_path = str(pth_files[0])
-            print(f"Found weights file: {model_path}")
-        else:
-            print(f"No .pth file found in {model_path}")
-            return
-    
-    state_dict = torch.load(str(model_path), map_location=device, weights_only=True)
+    state_dict = torch.load(str(model_file), map_location=device, weights_only=True)
     model.load_state_dict(state_dict)
     model.eval()
-    print("Model loaded successfully!")
+    print("Model loaded!")
     
-    # 3. Тестируем
-    print("\n=== Finding test images ===")
-    TEST_FOLDER = Path("test_images")
+    # Ищем тестовые изображения
     TEST_FOLDER.mkdir(exist_ok=True)
     
     test_images = []
@@ -202,22 +142,22 @@ def main():
         test_images.extend(TEST_FOLDER.glob(ext))
     
     if not test_images:
-        print(f"No test images found in {TEST_FOLDER.absolute()}")
+        print(f"\nNo test images found in {TEST_FOLDER.absolute()}")
         print("Please put some color images in the 'test_images' folder")
         return
     
     test_images = test_images[:3]
-    print(f"Found {len(test_images)} test images")
+    print(f"\nFound {len(test_images)} test images:")
+    for img in test_images:
+        print(f"  - {img.name}")
     
-    # 5. Обрабатываем изображения
-    print("\n=== Colorizing images ===")
+    # Обрабатываем изображения
+    print("\nColorizing...")
     fig, axes = plt.subplots(len(test_images), 3, figsize=(12, 4 * len(test_images)))
     if len(test_images) == 1:
         axes = axes.reshape(1, -1)
     
     for i, img_path in enumerate(test_images):
-        print(f"Processing: {img_path.name}")
-        
         gray, colorized, original = colorize_image(model, str(img_path), device)
         
         axes[i, 0].imshow(gray, cmap='gray')
@@ -232,11 +172,11 @@ def main():
         axes[i, 2].set_title('Original')
         axes[i, 2].axis('off')
     
-    # 6. Сохраняем результат
+    # Сохраняем результат
     plt.tight_layout()
-    output_path = Path("results_from_clearml.png")
+    output_path = Path("test_result.png")
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    print(f"\n=== Results saved to: {output_path.absolute()} ===")
+    print(f"\nResult saved to: {output_path.absolute()}")
     plt.show()
 
 if __name__ == "__main__":
