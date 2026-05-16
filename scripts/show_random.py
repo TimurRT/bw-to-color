@@ -16,7 +16,7 @@ import torch.nn.functional as F
 # ============================================
 # ПУТЬ К МОДЕЛИ (укажите ваш путь)
 # ============================================
-MODEL_PATH = "models/generator_final.pth"  # ← ваш путь к модели
+MODEL_PATH = "models/generator_final_1.pth"  # ← ваш путь к модели
 
 # Папка с тестовыми изображениями
 TEST_FOLDER = Path("test_images")
@@ -89,16 +89,38 @@ class ResNetUNetGenerator(nn.Module):
 # ============================================
 # Функция раскрашивания
 # ============================================
-def colorize_image(model, image_path, device):
-    img = Image.open(image_path).convert('RGB')
+def colorize_image(model, image_path, device, max_size=1024):
+    """
+    Раскрашивает изображение с сохранением высокого разрешения
     
-    # Grayscale вход
-    gray = img.convert('L').resize((256, 256))
+    Args:
+        max_size: максимальный размер большей стороны (None = оригинал)
+    """
+    img = Image.open(image_path).convert('RGB')
+    original_size = img.size  # сохраняем оригинальный размер
+    
+    # Сохраняем оригинал для отображения
+    original_display = img.copy()
+    
+    # Grayscale версия в оригинальном размере
+    gray_full = img.convert('L')
+    
+    # Если изображение слишком большое, уменьшаем для модели
+    w, h = gray_full.size
+    if max(w, h) > max_size:
+        ratio = max_size / max(w, h)
+        new_w = int(w * ratio)
+        new_h = int(h * ratio)
+        gray_input = gray_full.resize((new_w, new_h))
+    else:
+        gray_input = gray_full
+    
+    # Подготавливаем вход для модели
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5], std=[0.5])
     ])
-    gray_tensor = transform(gray).unsqueeze(0).to(device)
+    gray_tensor = transform(gray_input).unsqueeze(0).to(device)
     
     # Раскрашиваем
     with torch.no_grad():
@@ -110,7 +132,10 @@ def colorize_image(model, image_path, device):
     colorized = colorized.clamp(0, 1)
     colorized = transforms.ToPILImage()(colorized)
     
-    return gray, colorized, img.resize((256, 256))
+    # Увеличиваем до оригинального размера
+    colorized = colorized.resize(original_size, Image.BICUBIC)
+    
+    return gray_full, colorized, original_display
 
 # ============================================
 # Главная функция
