@@ -16,9 +16,7 @@ from PIL import Image
 
 from clearml import Task, Dataset as ClearMLDataset, Logger, OutputModel
 
-# ============================================
 # 1. Инициализация ClearML Task
-# ============================================
 task = Task.init(
     project_name="Colorization_GAN",
     task_name="GAN_training",
@@ -26,9 +24,7 @@ task = Task.init(
     auto_connect_frameworks={'pytorch': True}
 )
 
-# ============================================
 # 2. Гиперпараметры (можно менять в UI ClearML)
-# ============================================
 parser = argparse.ArgumentParser()
 parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
 parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
@@ -49,9 +45,7 @@ torch.cuda.manual_seed(SEED)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logger = task.get_logger()
 
-# ============================================
 # 3. Загрузка датасета из ClearML
-# ============================================
 print("=== Загрузка датасета из ClearML ===")
 dataset_path = ClearMLDataset.get(
     dataset_name="coco_2017_train",  # или cifar10_colorization
@@ -59,9 +53,7 @@ dataset_path = ClearMLDataset.get(
 ).get_local_copy()
 print(f"Датасет загружен в: {dataset_path}")
 
-# ============================================
 # 4. Аугментация и Dataset класс
-# ============================================
 class PairedAugmentation:
     """Синхронная аугментация для пары (grayscale, color)"""
     def __init__(self, img_size=256):
@@ -80,8 +72,8 @@ class PairedAugmentation:
 
         # Random Rotation (-15 to 15 degrees)
         angle = random.uniform(-15, 15)
-        input_img = TF.rotate(input_img, angle)      # ← angle добавлен
-        target_img = TF.rotate(target_img, angle)    # ← angle добавлен
+        input_img = TF.rotate(input_img, angle)  
+        target_img = TF.rotate(target_img, angle)    
 
         # Color Jitter ONLY on target (color image)
         color_jitter = transforms.ColorJitter(
@@ -191,9 +183,6 @@ class ResNetUNetGenerator(nn.Module):
 class ColorizationDataset(Dataset):
     def __init__(self, root_dir, image_size=256, is_train=True):
         self.image_paths = list(Path(root_dir).rglob("*.jpg"))
-        # ... (код для *.png если CIFAR) ...
-        
-        # --- ВОТ ЭТА СТРОКА ОГРАНИЧИВАЕТ ДАТАСЕТ ---
         # Перемешиваем и берем первые 8000 для обучения
         if is_train:
             random.shuffle(self.image_paths)
@@ -232,9 +221,7 @@ class ColorizationDataset(Dataset):
         
         return gray_tensor, color_tensor
 
-# ============================================
 # 5. Архитектура GAN (упрощенный Pix2Pix)
-# ============================================
 class UNetGenerator(nn.Module):
     """U-Net для колоризации с правильным согласованием размеров"""
     def __init__(self, in_channels=1, out_channels=3):
@@ -342,9 +329,7 @@ class PatchGAN(nn.Module):
         x = torch.cat([gray, color], dim=1)
         return self.model(x)
 
-# ============================================
 # 6. Инициализация моделей и оптимизаторов
-# ============================================
 generator = ResNetUNetGenerator(in_channels=1, out_channels=3).to(device)
 discriminator = PatchGAN(in_channels=4).to(device)
 
@@ -384,9 +369,7 @@ opt_D = optim.Adam(discriminator.parameters(), lr=args.lr, betas=(0.5, 0.999))
 criterion_GAN = nn.BCEWithLogitsLoss()
 criterion_L1 = nn.L1Loss()
 
-# ============================================
 # 7. DataLoaders
-# ============================================
 train_dataset = ColorizationDataset(dataset_path, args.image_size, is_train=True)
 train_loader = DataLoader(
     train_dataset, 
@@ -398,9 +381,7 @@ train_loader = DataLoader(
 
 print(f"Найдено {len(train_dataset)} изображений для обучения")
 
-# ============================================
 # 8. Цикл обучения
-# ============================================
 print("=== Начало обучения ===")
 patch_size = None
 
@@ -498,9 +479,7 @@ for epoch in range(args.epochs):
             artifact_object=checkpoint_path
         )
 
-# ============================================
 # 9. Сохранение финальной модели на сервер ClearML
-# ============================================
 print("=== Сохранение финальной модели на сервер ClearML ===")
 
 # Сохраняем модель локально
@@ -509,12 +488,12 @@ Path("models").mkdir(exist_ok=True)
 torch.save(generator.state_dict(), final_model_path)
 print(f"Model saved locally to: {final_model_path}")
 
-# ЗАГРУЖАЕМ НА СЕРВЕР CLEARML (гарантированное сохранение)
+# Загружаем на сервер ClearML 
 task.upload_artifact(
     name="generator_final",
     artifact_object=final_model_path
 )
-print("Model uploaded to ClearML server successfully!")
+print("Модель успешно загружена на ClearML!")
 
 # Также сохраняем чекпоинт с полным состоянием обучения
 checkpoint_path = "models/final_checkpoint.pth"
@@ -531,7 +510,7 @@ task.upload_artifact(
     name="final_checkpoint",
     artifact_object=checkpoint_path
 )
-print("Checkpoint uploaded to ClearML server!")
+print("Чекпоинт загружен на сервер ClearML!")
 
 task.close()
 print("Обучение завершено! Модели сохранены на сервере ClearML.")
